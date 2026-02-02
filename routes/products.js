@@ -1,7 +1,7 @@
 var express = require('express');
 var router = express.Router();
-let {ConvertTitleToSlug} = require('../utils/titleHandler')
-let {getMaxID} = require('../utils/IdHandler')
+let { ConvertTitleToSlug } = require('../utils/titleHandler')
+let { getMaxID } = require('../utils/IdHandler')
 let data = [
   {
     "id": 1,
@@ -1166,21 +1166,96 @@ let data = [
 //getall
 router.get('/', function (req, res, next) {
   let queries = req.query;
+
+  // Title filter (contains)
   let titleQ = queries.title ? queries.title : '';
-  let minPrice = queries.minPrice ? queries.minPrice : 0;
-  let maxPrice = queries.maxPrice ? queries.maxPrice : 1E6;
-  let page = queries.page ? queries.page : 1;
-  let limit = queries.limit ? queries.limit : 10;
+
+  // Slug filter (exact match)
+  let slugQ = queries.slug ? queries.slug : '';
+
+  // Parse and validate price range
+  let minPrice = parseFloat(queries.minPrice);
+  let maxPrice = parseFloat(queries.maxPrice);
+
+  // Set defaults if not a valid number
+  if (isNaN(minPrice) || minPrice < 0) {
+    minPrice = 0;
+  }
+  if (isNaN(maxPrice) || maxPrice < 0) {
+    maxPrice = 1E6;
+  }
+
+  // Handle case where maxPrice < minPrice: swap values
+  if (maxPrice < minPrice) {
+    let temp = minPrice;
+    minPrice = maxPrice;
+    maxPrice = temp;
+  }
+
+  // Parse and validate pagination - must be positive integers
+  let page = parseInt(queries.page, 10);
+  let limit = parseInt(queries.limit, 10);
+
+  // Validate page is a positive integer, default to 1
+  if (isNaN(page) || page < 1 || !Number.isInteger(page)) {
+    page = 1;
+  }
+
+  // Validate limit is a positive integer, default to 10
+  if (isNaN(limit) || limit < 1 || !Number.isInteger(limit)) {
+    limit = 10;
+  }
+
   console.log(queries);
+
   let result = data.filter(
     function (e) {
-      return (!e.isDeleted) && e.title.includes(titleQ) &&
-        e.price >= minPrice && e.price <= maxPrice
+      // Check if not deleted
+      if (e.isDeleted) {
+        return false;
+      }
+
+      // Check title contains (if provided)
+      if (titleQ && !e.title.toLowerCase().includes(titleQ.toLowerCase())) {
+        return false;
+      }
+
+      // Check slug exact match (if provided)
+      if (slugQ && e.slug !== slugQ) {
+        return false;
+      }
+
+      // Check price range
+      if (e.price < minPrice || e.price > maxPrice) {
+        return false;
+      }
+
+      return true;
     }
   );
-  result = result.splice(limit * (page - 1), limit)
+
+  // Apply pagination
+  result = result.slice(limit * (page - 1), limit * page);
+
   res.send(result);
 });
+//get by Slug (Check equal - exact match) - MUST be before /:id route
+router.get('/slug/:slug', function (req, res, next) {
+  let slugParam = req.params.slug;
+  let result = data.find(
+    function (e) {
+      return e.slug === slugParam && (!e.isDeleted);
+    }
+  )
+  if (result) {
+    res.send(result);
+  } else {
+    res.status(404).send({
+      "message": "Product with slug '" + slugParam + "' not found"
+    });
+  }
+});
+
 //get by ID
 router.get('/:id', function (req, res, next) {
   let result = data.find(
@@ -1199,21 +1274,69 @@ router.get('/:id', function (req, res, next) {
 
 
 router.post('/', function (req, res, next) {
+  // Validation errors array
+  let errors = [];
+
+  // Validate required fields - cannot be empty
+  if (!req.body.title || req.body.title.trim() === '') {
+    errors.push('Title is required and cannot be empty');
+  }
+
+  if (!req.body.description || req.body.description.trim() === '') {
+    errors.push('Description is required and cannot be empty');
+  }
+
+  // Validate price - must be a number
+  let price = req.body.price;
+  if (price === undefined || price === null || price === '') {
+    errors.push('Price is required');
+  } else if (isNaN(parseFloat(price))) {
+    errors.push('Price must be a valid number');
+  } else if (parseFloat(price) < 0) {
+    errors.push('Price must be a positive number');
+  }
+
+  // Validate category
+  if (!req.body.category) {
+    errors.push('Category is required');
+  }
+
+  // Validate images
+  if (!req.body.images || !Array.isArray(req.body.images) || req.body.images.length === 0) {
+    errors.push('Images are required and must be a non-empty array');
+  }
+
+  // If there are validation errors, return 400
+  if (errors.length > 0) {
+    return res.status(400).send({
+      "success": false,
+      "message": "Validation failed",
+      "errors": errors
+    });
+  }
+
+  // All validations passed - create product
+  // Slug is automatically generated from title with special character conversion
   let newObj = {
     id: (getMaxID(data) + 1) + '',
-    title: req.body.title,
-    slug: ConvertTitleToSlug(req.body.title),
-    price: req.body.price,
-    description: req.body.description,
+    title: req.body.title.trim(),
+    slug: ConvertTitleToSlug(req.body.title),  // Vietnamese chars -> ASCII, special chars removed
+    price: parseFloat(price),
+    description: req.body.description.trim(),
     category: req.body.category,
     images: req.body.images,
     creationAt: new Date(Date.now()),
     updatedAt: new Date(Date.now())
   }
+
   data.push(newObj);
   console.log(data);
-  res.send(newObj);
-  //console.log(g);
+
+  res.status(201).send({
+    "success": true,
+    "message": "Product created successfully",
+    "data": newObj
+  });
 })
 router.put('/:id', function (req, res, next) {
   let id = req.params.id;
